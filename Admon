@@ -1,0 +1,303 @@
+// src/pages/AdminDashboard.jsx
+import React, { useEffect, useState } from "react";
+import Layout from "../components/Layout";
+import axiosClient, { API_PATHS, normalizeResponse } from "../api/axiosClient";
+import { useAuth } from "../context/AuthContext";
+
+/**
+ * AdminDashboard
+ *
+ * Uses controllers you provided:
+ *  - AdminController: GET /api/admins/employers/pending, PUT /api/admins/employer/{id}/status
+ *  - ActivityLogController: GET /api/activity-logs, GET /api/activity-logs/user/{userId}, DELETE /api/activity-logs/{id}
+ *
+ * Replace or adapt small UI bits as desired.
+ */
+
+export default function AdminDashboard() {
+  const { user } = useAuth();
+  const [pending, setPending] = useState([]);
+  const [loadingPending, setLoadingPending] = useState(false);
+
+  const [selectedEmployerId, setSelectedEmployerId] = useState(null);
+  const [selectedDetails, setSelectedDetails] = useState(null);
+  const [modalLoading, setModalLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+
+  const [logs, setLogs] = useState([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
+  const [logsError, setLogsError] = useState("");
+
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    fetchPending();
+    fetchLogs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const fetchPending = async () => {
+    setLoadingPending(true);
+    try {
+      const res = await axiosClient.get(API_PATHS.ADMIN_PENDING_EMPLOYERS);
+      const data = normalizeResponse(res) || [];
+      setPending(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("fetchPending err", err);
+      setPending([]);
+      setToast({ title: "Error", message: "Could not fetch pending employers." });
+    } finally {
+      setLoadingPending(false);
+    }
+  };
+
+  const openEmployerDetails = async (employerId) => {
+    setSelectedEmployerId(employerId);
+    setSelectedDetails(null);
+    setModalLoading(true);
+    try {
+      // try admin-specific GET first
+      let res;
+      try {
+        res = await axiosClient.get(`/api/admins/employers/${employerId}`);
+      } catch (e) {
+        res = await axiosClient.get(API_PATHS.EMPLOYER_BY_ID(employerId));
+      }
+      const data = normalizeResponse(res);
+      setSelectedDetails(data);
+    } catch (err) {
+      console.error("openEmployerDetails err", err);
+      setToast({ title: "Error", message: "Could not load employer details." });
+    } finally {
+      setModalLoading(false);
+    }
+  };
+
+  const closeModal = () => {
+    setSelectedEmployerId(null);
+    setSelectedDetails(null);
+  };
+
+  const updateEmployerStatus = async (id, status) => {
+    if (!id) return;
+    const confirm = window.confirm(`Set status = ${status} for this employer?`);
+    if (!confirm) return;
+    setActionLoading(true);
+    try {
+      await axiosClient.put(API_PATHS.ADMIN_EMPLOYER_STATUS(id), null, { params: { status } });
+      setToast({ title: "Success", message: `Employer ${status.toLowerCase()}.` });
+      closeModal();
+      fetchPending();
+      fetchLogs();
+    } catch (err) {
+      console.error("updateEmployerStatus err", err);
+      setToast({ title: "Error", message: err?.message || "Status update failed." });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Activity logs
+  const fetchLogs = async () => {
+    setLoadingLogs(true);
+    setLogsError("");
+    try {
+      const res = await axiosClient.get(API_PATHS.ACTIVITY_LOGS);
+      const data = normalizeResponse(res) || [];
+      const arr = Array.isArray(data) ? data : [];
+      arr.sort((a, b) => {
+        const ta = new Date(a.activityTime || a.createdAt || a.created_at || 0).getTime();
+        const tb = new Date(b.activityTime || b.createdAt || b.created_at || 0).getTime();
+        return tb - ta;
+      });
+      setLogs(arr.slice(0, 50));
+    } catch (err) {
+      console.error("fetchLogs err", err);
+      setLogsError("Could not load activity logs.");
+      setLogs([]);
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
+  const fetchLogsForUser = async (userId) => {
+    if (!userId) return;
+    setLoadingLogs(true);
+    try {
+      const res = await axiosClient.get(`/api/activity-logs/user/${userId}`);
+      const data = normalizeResponse(res) || [];
+      setLogs(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("fetchLogsForUser err", err);
+      setLogsError("Could not load user logs.");
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
+  const deleteLog = async (logId) => {
+    if (!logId) return;
+    if (!window.confirm("Delete log?")) return;
+    try {
+      await axiosClient.delete(`${API_PATHS.ACTIVITY_LOGS}/${logId}`);
+      setLogs((prev) => prev.filter((l) => (l.logId || l.id) !== logId));
+      setToast({ title: "Deleted", message: "Activity log removed." });
+    } catch (err) {
+      console.error("deleteLog err", err);
+      setToast({ title: "Error", message: "Could not delete log." });
+    }
+  };
+
+  // small toast auto-dismiss
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  return (
+    <Layout>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 18, padding: 8 }}>
+        <div>
+          <h1>Admin Dashboard</h1>
+          <p className="subtitle">Review pending employers and manage platform activity.</p>
+
+          <section style={{ marginTop: 12 }}>
+            <h3>Pending Employers</h3>
+
+            {loadingPending ? (
+              <div className="card">Loading pending employers…</div>
+            ) : pending.length === 0 ? (
+              <div className="card">No pending employers at the moment.</div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {pending.map((p) => {
+                  const id = p.employerId || p.id || p.employer_id;
+                  const name = p.companyName || p.company_name || p.contactName || p.contact_name || p.contactPerson || "Employer";
+                  const email = p.contactEmail || p.contact_email || p.companyEmail || p.company_email || p.email;
+                  const addr = p.companyAddress || p.company_address || p.address;
+                  return (
+                    <div key={id} className="card card-hover" style={{ padding: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontWeight: 800 }}>{name}</div>
+                        <div style={{ color: "#9ca3af", marginTop: 6 }}>{email} • {addr}</div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <button className="pill-button" onClick={() => openEmployerDetails(id)}>View</button>
+                        <button className="pill-button outline" onClick={() => { setSelectedEmployerId(id); openEmployerDetails(id); }}>Review</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </div>
+
+        {/* Right column: Activity Logs */}
+        <aside>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3>Activity Logs</h3>
+            <div style={{ fontSize: 13, color: "#6b7280" }}>{loadingLogs ? "Loading…" : `${logs.length} items`}</div>
+          </div>
+
+          <div className="card" style={{ marginTop: 10 }}>
+            {logsError && <div style={{ color: "#f97373" }}>{logsError}</div>}
+
+            <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+              <button className="pill-button outline" onClick={() => fetchLogs()}>All</button>
+              <button className="pill-button ghost" onClick={() => fetchLogsForUser(user?.id)}>My logs</button>
+            </div>
+
+            {loadingLogs ? (
+              <div style={{ padding: 12 }}>Loading activity logs…</div>
+            ) : logs.length === 0 ? (
+              <div style={{ padding: 12 }}>No activity logged yet.</div>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {logs.map((l) => {
+                  const lid = l.logId || l.id || l.activityId;
+                  const at = l.activityTime || l.createdAt || l.created_at;
+                  return (
+                    <div key={lid} className="notification-item" style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>{(l.activityType || l.action || l.type || "Action").toString()}</div>
+                        <div style={{ color: "#9ca3af", fontSize: 13 }}>{l.activityDescription || l.details || (l.description || "")}</div>
+                        <div style={{ color: "#9ca3af", fontSize: 12, marginTop: 6 }}>{at ? new Date(at).toLocaleString() : ""}</div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button className="pill-button outline" onClick={() => fetchLogsForUser(l.userId || l.user_id || l.user)}>User</button>
+                        <button className="pill-button ghost" onClick={() => deleteLog(lid)}>Delete</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </aside>
+      </div>
+
+      {/* DETAILS MODAL */}
+      {selectedEmployerId && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3>Employer Details</h3>
+              <button className="modal-close" onClick={closeModal}>✕</button>
+            </div>
+
+            {!selectedDetails || modalLoading ? (
+              <div style={{ padding: 16 }}>Loading details…</div>
+            ) : (
+              <div style={{ display: "grid", gap: 12 }}>
+                <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+                  {selectedDetails.companyLogo || selectedDetails.company_logo ? (
+                    <img src={selectedDetails.companyLogo || selectedDetails.company_logo} alt="logo" style={{ width: 120, height: 80, objectFit: "contain", borderRadius: 8 }} />
+                  ) : null}
+
+                  <div>
+                    <div style={{ fontSize: 18, fontWeight: 800 }}>{selectedDetails.companyName || selectedDetails.company_name || selectedDetails.contactName || selectedDetails.contact_name}</div>
+                    <div style={{ color: "#9ca3af", marginTop: 6 }}>{selectedDetails.companyEmail || selectedDetails.company_email || selectedDetails.contactEmail || selectedDetails.contact_email}</div>
+                    <div style={{ color: "#9ca3af", marginTop: 6 }}>{selectedDetails.companyPhone || selectedDetails.company_phone || selectedDetails.contactPhone || selectedDetails.contact_phone}</div>
+                    <div style={{ marginTop: 6 }}>{selectedDetails.companyAddress || selectedDetails.company_address}</div>
+                  </div>
+                </div>
+
+                <div>
+                  <h4>Contact Person</h4>
+                  <div><strong>Name:</strong> {selectedDetails.contactName || selectedDetails.contact_name}</div>
+                  <div><strong>Email:</strong> {selectedDetails.contactEmail || selectedDetails.contact_email}</div>
+                  <div><strong>Phone:</strong> {selectedDetails.contactPhone || selectedDetails.contact_phone}</div>
+                </div>
+
+                <div>
+                  <h4>Company Description</h4>
+                  <div style={{ whiteSpace: "pre-wrap" }}>{selectedDetails.companyDescription || selectedDetails.company_description || selectedDetails.description || "—"}</div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                  <button className="pill-button outline" onClick={closeModal} disabled={actionLoading}>Close</button>
+                  <button className="pill-button ghost" onClick={() => updateEmployerStatus(selectedEmployerId, "REJECTED")} disabled={actionLoading}>Reject</button>
+                  <button className="pill-button filled" onClick={() => updateEmployerStatus(selectedEmployerId, "APPROVED")} disabled={actionLoading}>Approve</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TOAST */}
+      {toast && (
+        <div style={{ position: "fixed", right: 20, bottom: 20, zIndex: 11000 }}>
+          <div className="toast">
+            <div className="title">{toast.title}</div>
+            <div className="msg">{toast.message}</div>
+          </div>
+        </div>
+      )}
+    </Layout>
+  );
+}
